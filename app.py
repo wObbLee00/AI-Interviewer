@@ -1,12 +1,21 @@
 # Libraries
+from fastapi.staticfiles import StaticFiles
 import os
+import uuid
+import edge_tts
 import tempfile
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles   # later for audio files
+from fastapi.staticfiles import StaticFiles 
 from openai import OpenAI
-# from pydantic import Json   # not needed right now, can remove
+from pydantic import BaseModel
+
+class UserMessage(BaseModel):
+    text: str
+class TTSRequest(BaseModel):
+    text: str
+
 
 
 # API key 
@@ -19,7 +28,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI()
 
-# CORS (allow all origins for now; later you can restrict)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,6 +36,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+BASE_DIR=os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR=os.path.join(BASE_DIR, "static")
+AUDIO_OUTPUT=os.path.join(STATIC_DIR,"output")
+
+os.makedirs(AUDIO_OUTPUT,exist_ok=True)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
 
 
 @app.get("/")
@@ -45,17 +64,40 @@ def transcribe_audio(file_path: str) -> str:
             file=audio_file,
             response_format="json",
         )
-    # transcription.text is the final text
     return transcription.text.strip()
+
+def generate_bot_reply(user_text: str) -> str:
+    """
+    Sends user's text to an OpenAI Chat Model and returns the assistant's reply.
+    """
+    completion = client.chat.completions.create(
+        model="gpt-4o-mini", 
+        messages=[
+            {"role": "system", "content": "You are a friendly and helpful assistant."},
+            {"role": "user", "content": user_text},
+        ]
+    )
+    return completion.choices[0].message.content.strip()
+
+
+EDGE_VOICE = "en-US-AriaNeural"  # you can change the voice later
+
+async def text_to_speech_edge(text: str) -> str:
+    filename = f"{uuid.uuid4().hex}.mp3"
+    out_path = os.path.join(AUDIO_OUTPUT, filename)
+    communicate = edge_tts.Communicate(text, EDGE_VOICE)
+    await communicate.save(out_path)
+    audio_url = f"/static/output/{filename}"
+    return audio_url
+
+
+
 
 
 @app.post("/api/transcribe")
 async def api_transcribe(file: UploadFile = File(...)):
-    # Get the extension of the uploaded file
     original_ext = os.path.splitext(file.filename)[1]  # e.g. ".wav"
     suffix = original_ext if original_ext else ".webm"
-
-    # 1) Save uploaded file to temp path
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         contents = await file.read()
         tmp.write(contents)
@@ -72,3 +114,18 @@ async def api_transcribe(file: UploadFile = File(...)):
         # 4) Delete the temp file
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+@app.post("/api/reply")
+async def api_reply(message: UserMessage):
+    reply = generate_bot_reply(message.text)
+    return JSONResponse({"bot_reply": reply})
+
+
+@app.post("/api/tts")
+async def api_tts(payload: TTSRequest):
+    text = payload.text.strip()
+    if not text:
+        return JSONResponse({"detail": "Text cannot be empty."}, status_code=400)
+    audio_url = await text_to_speech_edge(text)
+    return JSONResponse({"audio_url": audio_url})

@@ -3,3 +3,4 @@ python-dotenv
 uvicorn 
 python-multipart 
 openai
+edge-tts
