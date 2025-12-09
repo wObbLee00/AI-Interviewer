@@ -129,3 +129,38 @@ async def api_tts(payload: TTSRequest):
         return JSONResponse({"detail": "Text cannot be empty."}, status_code=400)
     audio_url = await text_to_speech_edge(text)
     return JSONResponse({"audio_url": audio_url})
+
+
+@app.post("/api/talk")
+async def api_talk(file: UploadFile = File(...)):
+    original_ext = os.path.splitext(file.filename)[1]
+    suffix = original_ext if original_ext else ".webm"
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        contents = await file.read()
+        tmp.write(contents)
+        tmp_path = tmp.name
+
+    try:
+        # 2) Transcribe audio -> user_text
+        user_text = transcribe_audio(tmp_path)
+
+        # 3) Generate bot reply -> bot_text
+        bot_text = generate_bot_reply(user_text)
+
+        # 4) Generate TTS for bot_text -> audio_url
+        audio_url = await text_to_speech_edge(bot_text)
+
+        # 5) Send everything back to the client
+        return JSONResponse(
+            {
+                "user_text": user_text,
+                "bot_text": bot_text,
+                "audio_url": audio_url,
+            }
+        )
+
+    finally:
+        # 6) Clean up temp input audio
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
